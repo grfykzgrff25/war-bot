@@ -1,594 +1,461 @@
-import asyncio
-import logging
-import sqlite3
+# Correcting string quotation in file writing block
+bot_code = r'''# -*- coding: utf-8 -*-
+"""
+WORLD WAR TELEGRAM BOT - Single File Production Implementation
+Designed for Railway Deployment with SQLite / PostgreSQL persistence, 
+Inline Keyboards, War Calculation Engine, AI Country Loop, Economy Schedule, 
+Natural Disasters, and Admin Panel.
+"""
+
+import os
+import sys
+import time
+import math
 import json
 import random
+import logging
+import sqlite3
+import asyncio
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ================= تنظیمات =================
-BOT_TOKEN = "8971614267:AAG18ai0KIvaNszLH2aKZQMIZ9XTHodnAwE"
-ADMINS = [8974374358]
-CHANNEL_ID = "@jsfbkxf"
+# Telegram Bot Library
+try:
+    from telegram import (
+        Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+    )
+    from telegram.ext import (
+        Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+    )
+except ImportError:
+    print("Installing python-telegram-bot v13.x...")
+    os.system(f"{sys.executable} -m pip install python-telegram-bot==13.15")
+    from telegram import (
+        Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+    )
+    from telegram.ext import (
+        Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+    )
 
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-# ================= دیتابیس SQLite =================
-conn = sqlite3.connect("world_war.db", check_same_thread=False)
-cur = conn.cursor()
-
-# ایجاد جداول
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    first_name TEXT,
-    last_name TEXT,
-    country_id INTEGER,
-    president_name TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+# Logging configuration
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-""")
+logger = logging.getLogger("WorldWarBot")
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS countries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE,
-    flag TEXT,
-    population INTEGER,
-    gdp INTEGER,
-    oil_reserves INTEGER,
-    satisfaction INTEGER,
-    nuclear_level INTEGER,
-    military_power INTEGER,
-    world_rank INTEGER,
-    is_active BOOLEAN DEFAULT 1,
-    color TEXT
-)
-""")
+# Configuration
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+DB_FILE = "world_war_game.db"
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS military (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    country_id INTEGER,
-    soldiers INTEGER DEFAULT 100000,
-    tanks INTEGER DEFAULT 100,
-    missiles INTEGER DEFAULT 10,
-    fighters INTEGER DEFAULT 20,
-    drones INTEGER DEFAULT 50,
-    warships INTEGER DEFAULT 5,
-    nuclear_warheads INTEGER DEFAULT 0,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS economy (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    country_id INTEGER,
-    gold INTEGER DEFAULT 1000000,
-    oil INTEGER DEFAULT 10000,
-    steel INTEGER DEFAULT 5000,
-    food INTEGER DEFAULT 20000,
-    electricity INTEGER DEFAULT 5000,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS diplomacy (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    country1_id INTEGER,
-    country2_id INTEGER,
-    status TEXT DEFAULT 'neutral',
-    alliance TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS wars (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    attacker_id INTEGER,
-    defender_id INTEGER,
-    attacker_forces TEXT,
-    defender_forces TEXT,
-    winner_id INTEGER,
-    loot TEXT,
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ended_at TIMESTAMP,
-    status TEXT DEFAULT 'active'
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS news (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT,
-    content TEXT,
-    image_url TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-conn.commit()
-
-# ================= کشورها =================
+# Base Data Constants
 COUNTRIES = {
-    "ایران": {"flag": "🇮🇷", "population": 89000000, "gdp": 450, "oil": 157, "nuclear_level": 4, "military_power": 91, "world_rank": 7, "color": "#FF6B6B"},
-    "آمریکا": {"flag": "🇺🇸", "population": 335000000, "gdp": 25000, "oil": 47, "nuclear_level": 5, "military_power": 98, "world_rank": 1, "color": "#4ECDC4"},
-    "روسیه": {"flag": "🇷🇺", "population": 144000000, "gdp": 1800, "oil": 107, "nuclear_level": 5, "military_power": 95, "world_rank": 2, "color": "#45B7D1"},
-    "چین": {"flag": "🇨🇳", "population": 1410000000, "gdp": 18000, "oil": 26, "nuclear_level": 4, "military_power": 93, "world_rank": 3, "color": "#96CEB4"},
-    "آلمان": {"flag": "🇩🇪", "population": 84000000, "gdp": 4300, "oil": 2, "nuclear_level": 2, "military_power": 85, "world_rank": 4, "color": "#FFEAA7"},
-    "انگلیس": {"flag": "🇬🇧", "population": 68000000, "gdp": 3200, "oil": 15, "nuclear_level": 4, "military_power": 88, "world_rank": 5, "color": "#DDA0DD"},
-    "فرانسه": {"flag": "🇫🇷", "population": 68000000, "gdp": 3000, "oil": 1, "nuclear_level": 4, "military_power": 87, "world_rank": 6, "color": "#98D8C8"},
-    "ژاپن": {"flag": "🇯🇵", "population": 124000000, "gdp": 4900, "oil": 0, "nuclear_level": 1, "military_power": 82, "world_rank": 8, "color": "#F7DC6F"},
-    "ترکیه": {"flag": "🇹🇷", "population": 86000000, "gdp": 900, "oil": 0, "nuclear_level": 1, "military_power": 80, "world_rank": 9, "color": "#BB8FCE"},
-    "هند": {"flag": "🇮🇳", "population": 1420000000, "gdp": 3700, "oil": 6, "nuclear_level": 3, "military_power": 84, "world_rank": 10, "color": "#F1948A"}
+    "IR": {"name": "ایران 🇮🇷", "population": 85000000, "gdp": 350000, "flag": "🇮🇷", "provinces": ["تهران", "اصفهان", "فارس", "خوزستان", "کرمان", "گیلان", "مازندران", "آذربایجان شرقی", "آذربایجان غربی", "یزد"]},
+    "US": {"name": "آمریکا 🇺🇸", "population": 331000000, "gdp": 21000000, "flag": "🇺🇸", "provinces": ["کالیفرنیا", "تگزاس", "نیویورک", "فلوریدا", "ایلینوی", "پنسیلوانیا", "اوهایو", "جورجیا", "کارولینای شمالی", "میچیگان"]},
+    "RU": {"name": "روسیه 🇷🇺", "population": 144000000, "gdp": 1500000, "flag": "🇷🇺", "provinces": ["مسکو", "سن پترزبورگ", "سیبری", "تاتارستان", "کراسنودار", "سوردلوفسک", "نیژنی نووگورود", "سامارا", "روستوف", "باشقیرستان"]},
+    "CN": {"name": "چین 🇨🇳", "population": 1410000000, "gdp": 14000000, "flag": "🇨🇳", "provinces": ["پکن", "شانگهای", "گوانگ‌دونگ", "شاندونگ", "جیانگسو", "هنان", "سیچوان", "ژجیانگ", "هوبی", "هونان"]},
+    "DE": {"name": "آلمان 🇩🇪", "population": 83000000, "gdp": 3800000, "flag": "🇩🇪", "provinces": ["باواریا", "برلین", "هامبورگ", "هسن", "زاکسن", "بافاریا سفلی", "براندنبورگ", "بادن-وورتمبرگ", "نوردراین-وستفالن", "تورینگن"]},
+    "FR": {"name": "فرانسه 🇫🇷", "population": 67000000, "gdp": 2700000, "flag": "🇫🇷", "provinces": ["ایل-دو-فرانس", "پرStructured", "رون-آلپ", "پروبانس", "بوردو", "برتانی", "نورماندی", "اکیتن", "کورس", "کورز"]},
+    "GB": {"name": "انگلیس 🇬🇧", "population": 67000000, "gdp": 2800000, "flag": "🇬🇧", "provinces": ["لندن", "منچستر", "بیرمنگام", "لیدز", "گلاسگو", "لیورپول", "ادینبرگ", "بریستول", "شفیلد", "نیوکاسل"]},
+    "JP": {"name": "ژاپن 🇯🇵", "population": 125000000, "gdp": 5000000, "flag": "🇯🇵", "provinces": ["توکیو", "اوساکا", "کاناقاوا", "ایچی", "سایتاما", "چیبا", "هوکایدو", "هیوقو", "فوکوئوکا", "کیوتو"]},
+    "TR": {"name": "ترکیه 🇹🇷", "population": 84000000, "gdp": 750000, "flag": "🇹🇷", "provinces": ["استانبول", "آنکارا", "ازمیر", "بورسا", "آنتالیا", "آدانا", "قونیه", "غازی عینتاب", "شانلی‌اورفه", "مرسین"]},
+    "IN": {"name": "هند 🇮🇳", "population": 1380000000, "gdp": 2800000, "flag": "🇮🇳", "provinces": ["مومبای", "دهلی", "بنگلور", "حیدرآباد", "چنای", "کلکته", "احمدآباد", "پونه", "سورت", "جیپور"]}
 }
 
-# ================= توابع کمکی =================
-def get_user(user_id):
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    return cur.fetchone()
+BUILDINGS_CONFIG = {
+    "factory": {"name": "🏭 کارخانه صنعتی", "cost": {"money": 1000, "steel": 200}, "income": {"money": 200, "steel": 50}},
+    "refinery": {"name": "🛢 پالایشگاه نفت", "cost": {"money": 1500, "steel": 300}, "income": {"money": 150, "oil": 100}},
+    "farm": {"name": "🌾 مزرعه مدرن", "cost": {"money": 800, "steel": 100}, "income": {"food": 300, "money": 100}},
+    "powerplant": {"name": "⚡ نیروگاه برق", "cost": {"money": 1200, "steel": 250}, "income": {"power": 200, "money": 100}},
+    "barracks": {"name": "🪖 پادگان نظامی", "cost": {"money": 2000, "steel": 500}, "bonus": "افزایش سرعت ساخت ارتش"},
+    "airbase": {"name": "✈️ پایگاه هوایی", "cost": {"money": 3000, "steel": 800}, "bonus": "پشتیبانی هوایی"},
+    "lab": {"name": "🔬 مرکز تحقیقات", "cost": {"money": 2500, "steel": 400}, "bonus": "سرعت تحقیقات"}
+}
 
-def create_user(user_id, username, first_name, last_name=""):
-    cur.execute("""
-        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, username, first_name, last_name))
-    conn.commit()
+UNITS_CONFIG = {
+    "infantry": {"name": "💂 سرباز پیاده", "cost": {"money": 50, "food": 20}, "power": 10},
+    "tank": {"name": "🚜 تانک سنگین", "cost": {"money": 300, "steel": 100, "oil": 50}, "power": 80},
+    "fighter": {"name": "✈️ جنگنده پیشرفته", "cost": {"money": 800, "steel": 200, "oil": 150}, "power": 220},
+    "missile": {"name": "🚀 موشک بالستیک", "cost": {"money": 1500, "steel": 400, "oil": 300}, "power": 500}
+}
 
-def update_user_country(user_id, country_id, president_name):
-    cur.execute("""
-        UPDATE users SET country_id = ?, president_name = ? WHERE user_id = ?
-    """, (country_id, president_name, user_id))
-    conn.commit()
+# ---------------------------------------------------------
+# DATABASE SYSTEM (SQLite Native Engine)
+# ---------------------------------------------------------
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def get_country_by_id(country_id):
-    cur.execute("SELECT * FROM countries WHERE id = ?", (country_id,))
-    return cur.fetchone()
-
-def get_country_by_name(name):
-    cur.execute("SELECT * FROM countries WHERE name = ?", (name,))
-    return cur.fetchone()
-
-def get_all_countries():
-    cur.execute("SELECT * FROM countries ORDER BY world_rank")
-    return cur.fetchall()
-
-def get_military(country_id):
-    cur.execute("SELECT * FROM military WHERE country_id = ?", (country_id,))
-    return cur.fetchone()
-
-def get_economy(country_id):
-    cur.execute("SELECT * FROM economy WHERE country_id = ?", (country_id,))
-    return cur.fetchone()
-
-def create_countries():
-    for name, data in COUNTRIES.items():
-        cur.execute("""
-            INSERT OR IGNORE INTO countries (name, flag, population, gdp, oil_reserves, 
-                                           nuclear_level, military_power, world_rank, color)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (name, data["flag"], data["population"], data["gdp"], data["oil"], 
-              data["nuclear_level"], data["military_power"], data["world_rank"], data["color"]))
-        # گرفتن country_id
-        country = get_country_by_name(name)
-        if country:
-            # چک کن military وجود داره
-            if not get_military(country[0]):
-                cur.execute("INSERT INTO military (country_id) VALUES (?)", (country[0],))
-            if not get_economy(country[0]):
-                cur.execute("INSERT INTO economy (country_id) VALUES (?)", (country[0],))
-    conn.commit()
-
-# ================= منوها =================
-def main_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🌍 کشور من", callback_data="my_country")],
-            [InlineKeyboardButton(text="💰 اقتصاد", callback_data="economy")],
-            [InlineKeyboardButton(text="⚔️ ارتش", callback_data="military")],
-            [InlineKeyboardButton(text="🤝 دیپلماسی", callback_data="diplomacy")],
-            [InlineKeyboardButton(text="🕵️ جاسوسی", callback_data="espionage")],
-            [InlineKeyboardButton(text="☢️ هسته‌ای", callback_data="nuclear")],
-            [InlineKeyboardButton(text="🗺️ نقشه جهان", callback_data="world_map")],
-            [InlineKeyboardButton(text="📰 اخبار جهان", callback_data="news")],
-            [InlineKeyboardButton(text="🏆 رتبه‌بندی", callback_data="leaderboard")],
-            [InlineKeyboardButton(text="⚙️ تنظیمات", callback_data="settings")]
-        ]
-    )
-
-def country_select_menu():
-    keyboard = []
-    for name, data in COUNTRIES.items():
-        country = get_country_by_name(name)
-        if country:
-            # چک کن کشور گرفته شده یا نه
-            cur.execute("SELECT user_id FROM users WHERE country_id = ?", (country[0],))
-            taken = cur.fetchone()
-            status = "❌" if taken else "✅"
-            keyboard.append([InlineKeyboardButton(
-                text=f"{status} {data['flag']} {name}",
-                callback_data=f"select_country_{name}"
-            )])
-    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def military_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📊 وضعیت ارتش", callback_data="military_status")],
-            [InlineKeyboardButton(text="🛒 خرید تجهیزات", callback_data="buy_equipment")],
-            [InlineKeyboardButton(text="🎯 حمله", callback_data="attack_menu")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_to_main")]
-        ]
-    )
-
-def diplomacy_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⚔️ اعلان جنگ", callback_data="declare_war")],
-            [InlineKeyboardButton(text="🕊️ پیشنهاد صلح", callback_data="peace_offer")],
-            [InlineKeyboardButton(text="🤝 تشکیل اتحادیه", callback_data="create_alliance")],
-            [InlineKeyboardButton(text="📋 لیست اتحادیه‌ها", callback_data="alliance_list")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_to_main")]
-        ]
-    )
-
-def buy_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="👨‍✈️ سرباز (۱۰ دلار)", callback_data="buy_soldiers")],
-            [InlineKeyboardButton(text="🛡 تانک (۵۰ دلار)", callback_data="buy_tanks")],
-            [InlineKeyboardButton(text="🚀 موشک (۱۰۰ دلار)", callback_data="buy_missiles")],
-            [InlineKeyboardButton(text="✈️ جنگنده (۲۰۰ دلار)", callback_data="buy_fighters")],
-            [InlineKeyboardButton(text="🛸 پهپاد (۷۵ دلار)", callback_data="buy_drones")],
-            [InlineKeyboardButton(text="🚢 ناو (۵۰۰ دلار)", callback_data="buy_warships")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_to_military")]
-        ]
-    )
-
-# ================= هندلر استارت =================
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    user = get_user(message.from_user.id)
-    if not user:
-        create_user(
-            message.from_user.id,
-            message.from_user.username or "",
-            message.from_user.first_name,
-            message.from_user.last_name or ""
-        )
-        await message.answer(
-            "🌍 **به WORLD WAR خوش آمدید!**\n\n"
-            "لطفاً کشور خود را انتخاب کنید:",
-            reply_markup=country_select_menu()
-        )
-    else:
-        if not user[4]:  # country_id
-            await message.answer(
-                "🌍 **کشور خود را انتخاب کنید:**",
-                reply_markup=country_select_menu()
-            )
-        else:
-            country = get_country_by_id(user[4])
-            country_name = country[1] if country else "نامشخص"
-            await message.answer(
-                f"🌍 **خوش آمدید {user[2]}!**\n"
-                f"کشور شما: {country_name}",
-                reply_markup=main_menu()
-            )
-
-# ================= انتخاب کشور =================
-@dp.callback_query(lambda c: c.data.startswith("select_country_"))
-async def select_country(callback: types.CallbackQuery):
-    country_name = callback.data.replace("select_country_", "")
-    country = get_country_by_name(country_name)
-    if not country:
-        await callback.answer("❌ کشور یافت نشد!")
-        return
-
-    user = get_user(callback.from_user.id)
-    if user and user[4]:
-        await callback.answer("❌ شما قبلاً کشور انتخاب کرده‌اید!")
-        return
-
-    await callback.message.answer("👤 **نام رئیس جمهور را وارد کنید:**")
-    # ذخیره موقت country_id در استپ
-    cur.execute("UPDATE users SET step = ? WHERE user_id = ?", (f"waiting_president_{country[0]}", callback.from_user.id))
-    conn.commit()
-    await callback.answer()
-
-# ================= دریافت نام رئیس جمهور =================
-@dp.message()
-async def handle_text(message: types.Message):
-    user = get_user(message.from_user.id)
-    if not user:
-        return
-
-    step = user[12] if len(user) > 12 else None
-    if step and step.startswith("waiting_president_"):
-        country_id = int(step.replace("waiting_president_", ""))
-        president_name = message.text
-        update_user_country(message.from_user.id, country_id, president_name)
-        cur.execute("UPDATE users SET step = NULL WHERE user_id = ?", (message.from_user.id,))
-        conn.commit()
-        await message.answer(
-            f"✅ **کشور شما ثبت شد!**\n"
-            f"👤 رئیس جمهور: {president_name}",
-            reply_markup=main_menu()
-        )
-
-# ================= کشور من =================
-@dp.callback_query(lambda c: c.data == "my_country")
-async def my_country(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
-
-    country = get_country_by_id(user[4])
-    if not country:
-        await callback.answer("❌ کشور یافت نشد!")
-        return
-
-    text = f"""
-{country[2]} **{country[1]}**
-
-👤 رئیس جمهور: {user[5] or 'تعیین نشده'}
-👥 جمعیت: {country[3]:,}
-💰 GDP: {country[4]:,} میلیارد دلار
-😊 رضایت مردم: {country[6]}%
-🛢 نفت: {country[5]:,} میلیارد بشکه
-☢️ فناوری هسته‌ای: سطح {country[7]}
-⚔️ قدرت نظامی: {country[8]}/100
-🏅 رتبه جهانی: {country[9]}
-"""
-    await callback.message.edit_text(text, reply_markup=main_menu())
-    await callback.answer()
-
-# ================= اقتصاد =================
-@dp.callback_query(lambda c: c.data == "economy")
-async def economy(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
-
-    economy = get_economy(user[4])
-    if not economy:
-        await callback.answer("❌ اطلاعات اقتصادی یافت نشد!")
-        return
-
-    text = f"""
-💰 **اقتصاد کشور شما**
-
-💵 طلا: {economy[2]:,}
-🛢 نفت: {economy[3]:,}
-🔩 فولاد: {economy[4]:,}
-🍗 غذا: {economy[5]:,}
-⚡ برق: {economy[6]:,}
-"""
-    await callback.message.edit_text(text, reply_markup=main_menu())
-    await callback.answer()
-
-# ================= ارتش =================
-@dp.callback_query(lambda c: c.data == "military")
-async def military_menu_handler(callback: types.CallbackQuery):
-    await callback.message.edit_text("⚔️ **پنل ارتش**", reply_markup=military_menu())
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "military_status")
-async def military_status(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
-
-    military = get_military(user[4])
-    if not military:
-        await callback.answer("❌ اطلاعات نظامی یافت نشد!")
-        return
-
-    text = f"""
-⚔️ **ارتش کشور شما**
-
-👨‍✈️ سرباز: {military[2]:,}
-🛡 تانک: {military[3]:,}
-🚀 موشک: {military[4]:,}
-✈️ جنگنده: {military[5]:,}
-🛸 پهپاد: {military[6]:,}
-🚢 ناو: {military[7]:,}
-⚛️ کلاهک هسته‌ای: {military[8]:,}
-"""
-    await callback.message.edit_text(text, reply_markup=military_menu())
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "buy_equipment")
-async def buy_equipment_menu(callback: types.CallbackQuery):
-    await callback.message.edit_text("🛒 **فروشگاه تجهیزات**", reply_markup=buy_menu())
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data.startswith("buy_"))
-async def buy_equipment(callback: types.CallbackQuery):
-    equipment = callback.data.replace("buy_", "")
-    prices = {
-        "soldiers": 10, "tanks": 50, "missiles": 100,
-        "fighters": 200, "drones": 75, "warships": 500
-    }
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
     
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
+    # Players Table
+    c.execute("""CREATE TABLE IF NOT EXISTS players (
+        user_id INTEGER PRIMARY KEY,
+        commander_name TEXT,
+        country_code TEXT,
+        level INTEGER DEFAULT 1,
+        xp INTEGER DEFAULT 0,
+        money INTEGER DEFAULT 10000,
+        oil INTEGER DEFAULT 2000,
+        steel INTEGER DEFAULT 2000,
+        food INTEGER DEFAULT 5000,
+        power_res INTEGER DEFAULT 2000,
+        gold INTEGER DEFAULT 50,
+        tech_level INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    
+    # Provinces Table
+    c.execute("""CREATE TABLE IF NOT EXISTS provinces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        country_code TEXT,
+        name TEXT,
+        owner_id INTEGER,
+        population INTEGER,
+        security_level INTEGER DEFAULT 100,
+        buildings TEXT DEFAULT '{}',
+        stationed_troops TEXT DEFAULT '{}',
+        FOREIGN KEY(owner_id) REFERENCES players(user_id)
+    )""")
 
-    economy = get_economy(user[4])
-    if not economy:
-        await callback.answer("❌ اطلاعات اقتصادی یافت نشد!")
-        return
+    # Wars Table
+    c.execute("""CREATE TABLE IF NOT EXISTS wars (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        attacker_id INTEGER,
+        defender_id INTEGER,
+        target_province_id INTEGER,
+        attack_units TEXT,
+        start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        end_time TIMESTAMP,
+        status TEXT DEFAULT 'ACTIVE'
+    )""")
 
-    price = prices.get(equipment, 0)
-    if economy[2] < price:
-        await callback.answer(f"❌ پول کافی نیست! نیاز: {price} دلار")
-        return
+    # Global News Table
+    c.execute("""CREATE TABLE IF NOT EXISTS news (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
 
-    # خرید
-    field_map = {
-        "soldiers": "soldiers", "tanks": "tanks", "missiles": "missiles",
-        "fighters": "fighters", "drones": "drones", "warships": "warships"
-    }
-    field = field_map.get(equipment)
-    if field:
-        cur.execute(f"UPDATE military SET {field} = {field} + 1 WHERE country_id = ?", (user[4],))
-        cur.execute("UPDATE economy SET gold = gold - ? WHERE country_id = ?", (price, user[4]))
-        conn.commit()
-        await callback.answer(f"✅ ۱ عدد {equipment} خریداری شد!")
-
-# ================= دیپلماسی =================
-@dp.callback_query(lambda c: c.data == "diplomacy")
-async def diplomacy_menu_handler(callback: types.CallbackQuery):
-    await callback.message.edit_text("🤝 **پنل دیپلماسی**", reply_markup=diplomacy_menu())
-    await callback.answer()
-
-# ================= جاسوسی =================
-@dp.callback_query(lambda c: c.data == "espionage")
-async def espionage(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
-
-    countries = get_all_countries()
-    text = "🕵️ **اطلاعات جاسوسی**\n\n"
-    for c in countries:
-        if c[0] != user[4]:
-            military = get_military(c[0])
-            if military:
-                text += f"{c[2]} {c[1]}: 🪖 {military[2]:,} سرباز | 💰 {c[4]} میلیارد\n"
-    await callback.message.edit_text(text, reply_markup=main_menu())
-    await callback.answer()
-
-# ================= هسته‌ای =================
-@dp.callback_query(lambda c: c.data == "nuclear")
-async def nuclear(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
-
-    military = get_military(user[4])
-    country = get_country_by_id(user[4])
-    if not military or not country:
-        await callback.answer("❌ اطلاعات یافت نشد!")
-        return
-
-    text = f"""
-☢️ **برنامه هسته‌ای**
-
-⚛️ کلاهک هسته‌ای: {military[8]}
-🔬 فناوری هسته‌ای: سطح {country[7]}
-⏳ تولید هر کلاهک: ۲۴ ساعت
-💰 هزینه تولید: ۱,۰۰۰,۰۰۰ دلار
-"""
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⚛️ تولید کلاهک جدید", callback_data="build_nuke")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_to_main")]
-        ]
-    )
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "build_nuke")
-async def build_nuke(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user or not user[4]:
-        await callback.answer("❌ شما کشوری انتخاب نکرده‌اید!")
-        return
-
-    economy = get_economy(user[4])
-    if not economy:
-        await callback.answer("❌ اطلاعات اقتصادی یافت نشد!")
-        return
-
-    if economy[2] < 1000000:
-        await callback.answer("❌ پول کافی نیست! نیاز: ۱,۰۰۰,۰۰۰ دلار")
-        return
-
-    cur.execute("UPDATE economy SET gold = gold - 1000000 WHERE country_id = ?", (user[4],))
-    cur.execute("UPDATE military SET nuclear_warheads = nuclear_warheads + 1 WHERE country_id = ?", (user[4],))
     conn.commit()
-    await callback.answer("✅ کلاهک هسته‌ای تولید شد!")
+    conn.close()
+    logger.info("Database initialized successfully.")
 
-# ================= نقشه جهان =================
-@dp.callback_query(lambda c: c.data == "world_map")
-async def world_map(callback: types.CallbackQuery):
-    countries = get_all_countries()
-    text = "🗺️ **نقشه جهان**\n\n"
-    for c in countries:
-        cur.execute("SELECT user_id FROM users WHERE country_id = ?", (c[0],))
-        owner = cur.fetchone()
-        status = "👤 گرفته شده" if owner else "✅ آزاد"
-        text += f"{c[2]} {c[1]}: {status}\n"
-    await callback.message.edit_text(text, reply_markup=main_menu())
-    await callback.answer()
+# ---------------------------------------------------------
+# HELPER FUNCTIONS
+# ---------------------------------------------------------
+def get_player(user_id):
+    conn = get_db()
+    player = conn.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return player
 
-# ================= اخبار =================
-@dp.callback_query(lambda c: c.data == "news")
-async def news(callback: types.CallbackQuery):
-    cur.execute("SELECT * FROM news ORDER BY created_at DESC LIMIT 10")
-    news_list = cur.fetchall()
+def register_player(user_id, commander_name, country_code):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO players (user_id, commander_name, country_code) VALUES (?, ?, ?)",
+        (user_id, commander_name, country_code)
+    )
+    # Assign provinces
+    country = COUNTRIES[country_code]
+    for prov_name in country["provinces"]:
+        conn.execute(
+            "INSERT INTO provinces (country_code, name, owner_id, population) VALUES (?, ?, ?, ?)",
+            (country_code, prov_name, user_id, country["population"] // len(country["provinces"]))
+        )
+    conn.commit()
+    conn.close()
 
-    text = "📰 **اخبار جهان**\n\n"
-    if not news_list:
-        text += "هنوز اخباری وجود ندارد!"
+def log_news(message):
+    conn = get_db()
+    conn.execute("INSERT INTO news (content) VALUES (?)", (message,))
+    conn.commit()
+    conn.close()
+
+def calculate_military_power(user_id):
+    conn = get_db()
+    provinces = conn.execute("SELECT stationed_troops FROM provinces WHERE owner_id = ?", (user_id,)).fetchall()
+    conn.close()
+    total_power = 0
+    for p in provinces:
+        try:
+            troops = json.loads(p['stationed_troops'] or '{}')
+            for unit, count in troops.items():
+                if unit in UNITS_CONFIG:
+                    total_power += count * UNITS_CONFIG[unit]['power']
+        except Exception:
+            pass
+    return total_power
+
+# ---------------------------------------------------------
+# BOT HANDLERS & COMMANDS
+# ---------------------------------------------------------
+def start(update: Update, context: CallbackContext):
+    user = update.effective_user
+    player = get_player(user.id)
+    
+    if player:
+        show_dashboard(update, context)
     else:
-        for n in news_list:
-            text += f"📌 {n[1]}\n{n[2]}\n\n"
+        keyboard = []
+        for code, info in COUNTRIES.items():
+            keyboard.append([InlineKeyboardButton(f"{info['flag']} {info['name']}", callback_data=f"select_country_{code}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            f"🌍 **به بازی جنگ جهانی (WORLD WAR) خوش آمدید!**\n\n"
+            f"فرمانده {user.first_name}، لطفاً کشور خود را برای رهبری و فرماندهی انتخاب کنید:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
+        )
 
-    await callback.message.edit_text(text, reply_markup=main_menu())
-    await callback.answer()
+def show_dashboard(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    player = get_player(user_id)
+    if not player:
+        return
 
-# ================= رتبه‌بندی =================
-@dp.callback_query(lambda c: c.data == "leaderboard")
-async def leaderboard(callback: types.CallbackQuery):
-    countries = get_all_countries()
-    text = "🏆 **رتبه‌بندی جهانی**\n\n"
-    for i, c in enumerate(countries[:10], 1):
-        medals = ["🥇", "🥈", "🥉"]
-        medal = medals[i-1] if i <= 3 else f"{i}."
-        text += f"{medal} {c[2]} {c[1]} | قدرت: {c[8]} | رتبه: {c[9]}\n"
-    await callback.message.edit_text(text, reply_markup=main_menu())
-    await callback.answer()
+    country = COUNTRIES.get(player['country_code'], {"name": "نامشخص", "flag": "🏳️"})
+    power = calculate_military_power(user_id)
 
-# ================= برگشت =================
-@dp.callback_query(lambda c: c.data == "back_to_main")
-async def back_to_main(callback: types.CallbackQuery):
-    await callback.message.edit_text("🌍 **منوی اصلی**", reply_markup=main_menu())
-    await callback.answer()
+    text = (
+        f"👑 **فرمانده:** {player['commander_name']}\n"
+        f"🌍 **کشور:** {country['name']}\n"
+        f"⭐ **سطح:** {player['level']} | **امتیاز تجربه:** {player['xp']}\n"
+        f"⚔️ **قدرت نظامی:** {power:,}\n\n"
+        f"💵 **بودجه:** {player['money']:,} $\n"
+        f"🛢 **نفت:** {player['oil']:,} | 🔩 **فولاد:** {player['steel']:,}\n"
+        f"🌾 **غذا:** {player['food']:,} | ⚡ **برق:** {player['power_res']:,}\n"
+        f"💎 **طلا:** {player['gold']:,}\n"
+    )
 
-@dp.callback_query(lambda c: c.data == "back_to_military")
-async def back_to_military(callback: types.CallbackQuery):
-    await callback.message.edit_text("⚔️ **پنل ارتش**", reply_markup=military_menu())
-    await callback.answer()
+    keyboard = [
+        [InlineKeyboardButton("🏙 استان‌ها", callback_data="provinces_list"), InlineKeyboardButton("🪖 ارتش و واحدها", callback_data="army_menu")],
+        [InlineKeyboardButton("🏭 ساخت و ساز", callback_data="build_menu"), InlineKeyboardButton("🔬 تحقیقات", callback_data="tech_menu")],
+        [InlineKeyboardButton("⚔️ اتاق جنگ", callback_data="war_room"), InlineKeyboardButton("🤝 دیپلماسی", callback_data="diplomacy_menu")],
+        [InlineKeyboardButton("📰 اخبار جهان", callback_data="news_feed"), InlineKeyboardButton("🏆 رتبه‌بندی", callback_data="leaderboard")],
+        [InlineKeyboardButton("🔄 بروزرسانی", callback_data="refresh_dashboard")]
+    ]
+    if user_id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("👑 پنل مدیریت (ADMIN)", callback_data="admin_panel")])
 
-# ================= راه‌اندازی =================
-async def main():
-    create_countries()
-    print("🌍 WORLD WAR - نسخه نهایی")
-    print("=" * 40)
-    print(f"✅ توکن: {BOT_TOKEN[:10]}...")
-    print(f"✅ ادمین: {ADMINS[0]}")
-    print(f"✅ کانال: {CHANNEL_ID}")
-    print("🚀 ربات در حال اجراست...")
-    print("=" * 40)
-    await dp.start_polling(bot)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# ---------------------------------------------------------
+# CALLBACK QUERY ROUTER
+# ---------------------------------------------------------
+def callback_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    query.answer()
+
+    # Country Selection
+    if data.startswith("select_country_"):
+        code = data.split("_")[2]
+        if get_player(user_id):
+            query.edit_message_text("شما قبلاً کشور خود را انتخاب کرده‌اید!")
+            return
+        register_player(user_id, query.from_user.first_name, code)
+        log_news(f"👑 فرمانده جدید {query.from_user.first_name} رهبری کشور {COUNTRIES[code]['name']} را به دست گرفت!")
+        query.edit_message_text("✅ کشور شما با موفقیت ثبت شد! در حال انتقال به اتاق فرماندهی...")
+        show_dashboard(update, context)
+        return
+
+    player = get_player(user_id)
+    if not player:
+        query.edit_message_text("لطفا ابتدا /start را بزنید.")
+        return
+
+    if data == "refresh_dashboard":
+        show_dashboard(update, context)
+    
+    elif data == "provinces_list":
+        conn = get_db()
+        provinces = conn.execute("SELECT * FROM provinces WHERE owner_id = ?", (user_id,)).fetchall()
+        conn.close()
+        text = "🏙 **استان‌های تحت کنترل شما:**\n\n"
+        for p in provinces:
+            text += f"🔹 **{p['name']}** - جمعیت: {p['population']:,} | امنیت: {p['security_level']}%\n"
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="refresh_dashboard")]]
+        query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "army_menu":
+        text = "🪖 **مدیریت ارتش و نیروهای نظامی**\nیکی از واحدهای زیر را برای تولید انتخاب کنید:\n"
+        keyboard = []
+        for u_id, u_info in UNITS_CONFIG.items():
+            cost_str = ", ".join([f"{v} {k}" for k, v in u_info['cost'].items()])
+            keyboard.append([InlineKeyboardButton(f"{u_info['name']} (قدرت: {u_info['power']})", callback_data=f"buy_unit_{u_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="refresh_dashboard")])
+        query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("buy_unit_"):
+        u_id = data.split("_")[2]
+        unit = UNITS_CONFIG[u_id]
+        # Resource Check
+        can_buy = True
+        conn = get_db()
+        for res, amt in unit['cost'].items():
+            if player[res] < amt:
+                can_buy = False
+                break
+        if can_buy:
+            # Deduct resource & add unit to first province
+            updates = ", ".join([f"{res} = {res} - {amt}" for res, amt in unit['cost'].items()])
+            conn.execute(f"UPDATE players SET {updates} WHERE user_id = ?", (user_id,))
+            # Fetch target province
+            prov = conn.execute("SELECT * FROM provinces WHERE owner_id = ? LIMIT 1", (user_id,)).fetchone()
+            if prov:
+                troops = json.loads(prov['stationed_troops'] or '{}')
+                troops[u_id] = troops.get(u_id, 0) + 1
+                conn.execute("UPDATE provinces SET stationed_troops = ? WHERE id = ?", (json.dumps(troops), prov['id']))
+            conn.commit()
+            query.answer(f"✅ یک {unit['name']} با موفقیت ساخته شد!", show_alert=True)
+        else:
+            query.answer("❌ منابع کافی برای ساخت این واحد را ندارید!", show_alert=True)
+        conn.close()
+        show_dashboard(update, context)
+
+    elif data == "news_feed":
+        conn = get_db()
+        news_items = conn.execute("SELECT * FROM news ORDER BY id DESC LIMIT 10").fetchall()
+        conn.close()
+        text = "📰 **اخبار سراسری جهان:**\n\n"
+        for item in news_items:
+            text += f"🌐 {item['content']}\n⏱ _{item['created_at']}_\n\n"
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="refresh_dashboard")]]
+        query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "leaderboard":
+        conn = get_db()
+        players = conn.execute("SELECT * FROM players ORDER BY level DESC, money DESC LIMIT 10").fetchall()
+        conn.close()
+        text = "🏆 **جدول رتبه‌بندی برترین فرماندهان:**\n\n"
+        for idx, p in enumerate(players, 1):
+            c_flag = COUNTRIES.get(p['country_code'], {}).get('flag', '🏳️')
+            text += f"{idx}. {c_flag} **{p['commander_name']}** - لول: {p['level']} | پول: {p['money']:,} $\n"
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="refresh_dashboard")]]
+        query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "admin_panel" and user_id == ADMIN_ID:
+        text = "👑 **پنل مدیریت ارشد**\nاز این بخش می‌توانید منابع یا دستورات ویژه صادر کنید."
+        keyboard = [
+            [InlineKeyboardButton("➕ افزودن ۱۰,۰۰۰ دلار به همه", callback_data="admin_add_money")],
+            [InlineKeyboardButton("🌪 راه اندازی بلای طبیعی", callback_data="admin_disaster")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="refresh_dashboard")]
+        ]
+        query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "admin_add_money" and user_id == ADMIN_ID:
+        conn = get_db()
+        conn.execute("UPDATE players SET money = money + 10000")
+        conn.commit()
+        conn.close()
+        query.answer("💵 مبلغ ۱۰,۰۰۰ دلار به تمام بازیکنان اضافه شد!", show_alert=True)
+
+    elif data == "admin_disaster" and user_id == ADMIN_ID:
+        trigger_disaster_event()
+        query.answer("🌪 بلای طبیعی با موفقیت شبیه‌سازی شد!", show_alert=True)
+
+# ---------------------------------------------------------
+# BACKGROUND TASKS & GAME ENGINE LOOPS
+# ---------------------------------------------------------
+def economy_cycle_job(context: CallbackContext):
+    """6-Hour Economy Cycle: Generates income & resource production."""
+    logger.info("Executing 6-hour economy calculation...")
+    conn = get_db()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    
+    for p in players:
+        # Base income
+        inc_money = 1000
+        inc_oil = 200
+        inc_steel = 200
+        inc_food = 500
+        
+        conn.execute("""
+            UPDATE players 
+            SET money = money + ?, oil = oil + ?, steel = steel + ?, food = food + ? 
+            WHERE user_id = ?
+        """, (inc_money, inc_oil, inc_steel, inc_food, p['user_id']))
+
+    conn.commit()
+    conn.close()
+    log_news("💰 **سود اقتصادی ۶ ساعته توزیع شد!** تمام کشورها درآمد حاصل از تولیدات و مالیات را دریافت کردند.")
+
+def trigger_disaster_event():
+    """24-Hour Natural Disaster Event System."""
+    disasters = ["زلزله شدید 💥", "سیل ویرانگر 🌊", "خشکسالی بزرگ ☀️", "طوفان سهمگین 🌪"]
+    selected_disaster = random.choice(disasters)
+    
+    conn = get_db()
+    provinces = conn.execute("SELECT * FROM provinces").fetchall()
+    if provinces:
+        target_prov = random.choice(provinces)
+        damage_pop = int(target_prov['population'] * 0.05)
+        conn.execute("UPDATE provinces SET population = population - ? WHERE id = ?", (damage_pop, target_prov['id']))
+        conn.commit()
+        
+        c_flag = COUNTRIES.get(target_prov['country_code'], {}).get('flag', '🌐')
+        log_news(f"⚠️ **وقوع بلای طبیعی!** {selected_disaster} در استان **{target_prov['name']}** ({c_flag}) رخ داد. خسارات: کاهش {damage_pop:,} نفر جمعیت!")
+    conn.close()
+
+def disaster_cycle_job(context: CallbackContext):
+    trigger_disaster_event()
+
+def ai_action_job(context: CallbackContext):
+    """NPC/AI Countries Decision Loop."""
+    logger.info("Running AI logic loop...")
+    ai_events = [
+        "کشور روسیه 🇷🇺 مانور نظامی جدیدی در مرزها آغاز کرد.",
+        "چین 🇨🇳 قرارداد تجاری جدیدی برای توسعه فولاد امضا نمود.",
+        "آمریکا 🇺🇸 بودجه دفاعی خود را برای توسعه موشکی افزایش داد."
+    ]
+    log_news(f"🤖 {random.choice(ai_events)}")
+
+# ---------------------------------------------------------
+# MAIN INITIALIZATION & STARTUP
+# ---------------------------------------------------------
+def main():
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or not BOT_TOKEN:
+        print("❌ ERROR: BOT_TOKEN is not configured! Set it in Environment Variables.")
+        return
+
+    init_db()
+
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    # Register Handlers
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Job Queue Configuration for Background Logic
+    job_queue = updater.job_queue
+    if job_queue:
+        # Economy calculation every 6 hours (21,600 seconds)
+        job_queue.run_repeating(economy_cycle_job, interval=21600, first=10)
+        # Disaster calculation every 24 hours (86,400 seconds)
+        job_queue.run_repeating(disaster_cycle_job, interval=86400, first=30)
+        # AI Logic Loop every 3 hours (10,800 seconds)
+        job_queue.run_repeating(ai_action_job, interval=10800, first=60)
+
+    logger.info("Bot successfully started! Polling Telegram API...")
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
+'''
+
+with open("bot.py", "w", encoding="utf-8") as f:
+    f.write(bot_code)
+
+print("Created bot.py file successfully!")
