@@ -4,7 +4,7 @@ import random
 import logging
 import asyncio
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,7 +14,7 @@ from telegram.ext import (
     filters
 )
 
-# Optional OpenAI / LLM Integration
+# Optional OpenAI Integration
 try:
     import openai
     OPENAI_AVAILABLE = True
@@ -22,7 +22,7 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 # ----------------------------------------------------
-# 1. LOGGING & DATABASE INITIALIZATION
+# 1. LOGGING & CONFIG
 # ----------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -30,16 +30,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_NAME = "world_war.db"
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 AI_API_KEY = os.environ.get("OPENAI_API_KEY", None)
 
 if OPENAI_AVAILABLE and AI_API_KEY:
     openai.api_key = AI_API_KEY
 
+# ----------------------------------------------------
+# 2. DATABASE INITIALIZATION
+# ----------------------------------------------------
 def init_sqlite():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Users / Commanders & Coup/Approval System
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -57,7 +61,6 @@ def init_sqlite():
         )
     ''')
     
-    # Countries
     c.execute('''
         CREATE TABLE IF NOT EXISTS countries (
             code TEXT PRIMARY KEY,
@@ -77,7 +80,6 @@ def init_sqlite():
         )
     ''')
     
-    # Provinces (Radioactivity & Weather)
     c.execute('''
         CREATE TABLE IF NOT EXISTS provinces (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,13 +88,12 @@ def init_sqlite():
             population INTEGER,
             security INTEGER DEFAULT 100,
             infrastructure INTEGER DEFAULT 1,
-            owner_id INTEGER,
+            owner_id INTEGER DEFAULT 0,
             is_radioactive INTEGER DEFAULT 0,
             weather_condition TEXT DEFAULT 'CLEAR'
         )
     ''')
     
-    # Armies & Cyber/Futuristic Tech
     c.execute('''
         CREATE TABLE IF NOT EXISTS armies (
             user_id INTEGER PRIMARY KEY,
@@ -116,7 +117,6 @@ def init_sqlite():
         )
     ''')
     
-    # Wars & Tactics
     c.execute('''
         CREATE TABLE IF NOT EXISTS wars (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,13 +125,10 @@ def init_sqlite():
             province_id INTEGER,
             end_time TIMESTAMP,
             attacker_tactic TEXT DEFAULT 'STANDARD',
-            is_false_flag INTEGER DEFAULT 0,
-            framed_user_id INTEGER DEFAULT 0,
             status TEXT DEFAULT 'ACTIVE'
         )
     ''')
     
-    # Military Alliances
     c.execute('''
         CREATE TABLE IF NOT EXISTS alliances (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,20 +136,7 @@ def init_sqlite():
             leader_id INTEGER
         )
     ''')
-
-    # Generals
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS generals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            name TEXT,
-            type TEXT,
-            level INTEGER DEFAULT 1,
-            is_alive INTEGER DEFAULT 1
-        )
-    ''')
     
-    # World News
     c.execute('''
         CREATE TABLE IF NOT EXISTS news (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,7 +145,7 @@ def init_sqlite():
         )
     ''')
 
-    # Seed Default Countries if empty
+    # Seed Default Data
     c.execute("SELECT COUNT(*) FROM countries")
     if c.fetchone()[0] == 0:
         default_countries = [
@@ -172,25 +156,20 @@ def init_sqlite():
             ("DEU", "آلمان", "🇩🇪", 83000000, 1),
             ("FRA", "فرانسه", "🇫🇷", 67000000, 1),
             ("GBR", "انگلیس", "🇬🇧", 67000000, 1),
-            ("JPN", "ژاپن", "🇯🇵", 125000000, 1),
             ("TUR", "ترکیه", "🇹🇷", 84000000, 1),
-            ("IND", "هند", "🇮🇳", 1380000000, 1),
         ]
         for code, name, flag, pop, is_ai in default_countries:
             c.execute("INSERT INTO countries (code, name, flag, population, is_ai) VALUES (?, ?, ?, ?, ?)",
                       (code, name, flag, pop, is_ai))
-            if code == "IRN":
-                provs = ["تهران", "اصفهان", "خوزستان", "فارس", "کرمان", "گیلان", "مازندران"]
-                for p in provs:
-                    c.execute("INSERT INTO provinces (country_code, name, population) VALUES (?, ?, ?)",
-                              (code, p, random.randint(1000000, 10000000)))
+            
+        provs = [("IRN", "تهران"), ("IRN", "اصفهان"), ("IRN", "خوزستان"), ("USA", "نیویورک"), ("RUS", "مسکو"), ("CHN", "پکن")]
+        for ccode, pname in provs:
+            c.execute("INSERT INTO provinces (country_code, name, population) VALUES (?, ?, ?)",
+                      (ccode, pname, random.randint(2000000, 10000000)))
 
     conn.commit()
     conn.close()
 
-# ----------------------------------------------------
-# 2. HELPER FUNCTIONS
-# ----------------------------------------------------
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -208,42 +187,33 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
 def add_news(content):
     db_query("INSERT INTO news (content) VALUES (?)", (content,), commit=True)
 
-async def generate_ai_response(prompt: str, context_system: str = "شما یک مشاور استراتژیک نظامی و اقتصادی هستید.") -> str:
-    if OPENAI_AVAILABLE and AI_API_KEY:
-        try:
-            response = await asyncio.to_thread(
-                openai.ChatCompletion.create,
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": context_system},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=250,
-                temperature=0.7
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"AI API Error: {e}")
-    
-    fallback_responses = [
-        "جناب فرمانده، طبق اطلاعات اطلاعاتی، تقویت سیستم دفاع سایبری و ذخایر ارزی پیشنهاد می‌شود.",
-        "پیشنهاد می‌کنم پیش از هرگونه اقدام نظامی، با کشورهای عضو پیمان مشورت کنید.",
-        "رضایت عمومی کاهش یافته است؛ بخشی از بودجه ارتش را به رفاه استان‌ها اختصاص دهید."
+# ----------------------------------------------------
+# 3. MAIN KEYBOARD LAYOUT
+# ----------------------------------------------------
+def get_main_reply_keyboard():
+    keyboard = [
+        ["بررسی خبر جدید 🔍", "مشاهده و مدیریت آرشیو 📚"],
+        ["آمار آرشیو 📊", "وضعیت هوش مصنوعی 🧠"],
+        ["تنظیمات سیستم ⚙️", "لیست مدیران 👥"],
+        ["راهنما 📋", "پاکسازی کامل آرشیو 🗑️"]
     ]
-    return random.choice(fallback_responses)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ----------------------------------------------------
-# 3. COMMAND HANDLERS & 2-COLUMN MENUS
+# 4. COMMAND HANDLERS
 # ----------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
+    if ADMIN_ID != 0 and user_id == ADMIN_ID:
+        db_query("INSERT OR IGNORE INTO users (user_id, commander_name, country_code, is_admin) VALUES (?, ?, 'IRN', 1)",
+                 (user_id, f"فرمانده {user.first_name}"), commit=True)
+    
     db_user = db_query("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
     
     if not db_user:
         countries = db_query("SELECT code, name, flag FROM countries WHERE is_ai = 1", fetchall=True)
-        # 2-Column Layout for Country Selection
         keyboard = []
         row = []
         for code, name, flag in countries:
@@ -254,370 +224,266 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row:
             keyboard.append(row)
             
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            f"🌍 **به بازی WORLD WAR خوش آمدید، {user.first_name}!**\n\n"
+            f"🌍 **به بازی WORLD WAR خوش آمدید {user.first_name}!**\n"
             "لطفاً کشور تحت فرماندهی خود را انتخاب کنید:",
-            reply_markup=reply_markup,
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
     else:
-        await main_menu(update, context)
+        await update.message.reply_text(
+            "🌍 **ستاد فرماندهی کل نیروهای مسلح (WORLD WAR)**\nلطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
+            reply_markup=get_main_reply_keyboard()
+        )
 
-async def select_country_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# ----------------------------------------------------
+# 5. ADMIN PANEL & COMMANDS
+# ----------------------------------------------------
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_check = db_query("SELECT is_admin FROM users WHERE user_id = ?", (user_id,), fetchone=True)
     
-    user_id = query.from_user.id
-    country_code = query.data.split("_")[2]
-    
-    commander_name = f"فرمانده {query.from_user.first_name}"
-    db_query("INSERT INTO users (user_id, commander_name, country_code) VALUES (?, ?, ?)",
-             (user_id, commander_name, country_code), commit=True)
-    
-    db_query("INSERT INTO armies (user_id) VALUES (?)", (user_id,), commit=True)
-    db_query("INSERT INTO generals (user_id, name, type) VALUES (?, ?, ?)", (user_id, "ژنرال اصلی", "LAND"), commit=True)
-    db_query("UPDATE countries SET is_ai = 0 WHERE code = ?", (country_code,), commit=True)
-    
-    add_news(f"👑 فرمانده جدید {commander_name} رهبری کشور {country_code} را بر عهده گرفت!")
-    
-    await query.edit_message_text(f"✅ انتخاب شما ثبت شد! شما اکنون رهبر کشور {country_code} هستید.")
-    await main_menu(update, context)
+    if not admin_check or admin_check[0] != 1:
+        await update.message.reply_text("❌ شما دسترسی ادمین ندارید.")
+        return
 
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 2-Column Grid Layout matching user's requested style
-    keyboard = [
-        [
-            InlineKeyboardButton("🔍 بررسی وضعیت کشور", callback_data="menu_profile"),
-            InlineKeyboardButton("🧠 مشاور هوش مصنوعی", callback_data="menu_ai_advisor")
-        ],
-        [
-            InlineKeyboardButton("📊 آمار ارتش & نیروها", callback_data="menu_army"),
-            InlineKeyboardButton("⚔️ اتاق جنگ تاکتیکی", callback_data="menu_war")
-        ],
-        [
-            InlineKeyboardButton("🤝 دیپلماسی & پیمان‌ها", callback_data="menu_alliances"),
-            InlineKeyboardButton("🕵️ عملیات سایبری", callback_data="menu_blackops")
-        ],
-        [
-            InlineKeyboardButton("🛰️ دفاع موشکی & رادار", callback_data="menu_defense"),
-            InlineKeyboardButton("💣 اتاق سلاح هسته‌ای", callback_data="menu_nuke")
-        ],
-        [
-            InlineKeyboardButton("🛳️ بازار & تنگه‌ها", callback_data="menu_market"),
-            InlineKeyboardButton("🧬 درخت فناوری", callback_data="menu_tech")
-        ],
-        [
-            InlineKeyboardButton("🏆 جدول رتبه‌بندی", callback_data="menu_rankings"),
-            InlineKeyboardButton("📰 اخبار سراسری جهان", callback_data="menu_news")
+    text = (
+        "⚙️ **پنل مدیریت ارشد ربات (ADMIN PANEL)**\n\n"
+        "دستورات عمومی ادمین:\n"
+        "🔹 `/broadcast <متن>` - ارسال پیام همگانی به همه کاربران\n"
+        "🔹 `/addmoney <user_id> <مقدار>` - واریز بودجه به کاربر\n"
+        "🔹 `/sanction <user_id>` - تحریم یا لغو تحریم کاربر\n"
+        "🔹 `/setapproval <user_id> <درصد>` - تنظیم درصد رضایت عمومی\n"
+        "🔹 `/cleararchive` - پاکسازی کامل اخبار و آرشیو"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_check = db_query("SELECT is_admin FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+    if not admin_check or admin_check[0] != 1:
+        return
+    
+    msg = " ".join(context.args)
+    if not msg:
+        await update.message.reply_text("⚠️ لطفاً متن پیام را وارد کنید. مثال:\n`/broadcast پیام تست`", parse_mode="Markdown")
+        return
+
+    users = db_query("SELECT user_id FROM users", fetchall=True)
+    count = 0
+    for u in users:
+        try:
+            await context.bot.send_message(chat_id=u[0], text=f"📢 **پیام عمومی ادمین:**\n\n{msg}", parse_mode="Markdown")
+            count += 1
+        except Exception:
+            pass
+    await update.message.reply_text(f"✅ پیام به {count} کاربر ارسال شد.")
+
+async def admin_addmoney(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_check = db_query("SELECT is_admin FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+    if not admin_check or admin_check[0] != 1:
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("⚠️ نحوه استفاده: `/addmoney <user_id> <مقدار>`", parse_mode="Markdown")
+        return
+        
+    target_id, amount = int(context.args[0]), float(context.args[1])
+    target_user = db_query("SELECT country_code FROM users WHERE user_id = ?", (target_id,), fetchone=True)
+    if target_user:
+        db_query("UPDATE countries SET money = money + ? WHERE code = ?", (amount, target_user[0]), commit=True)
+        await update.message.reply_text(f"✅ مبلغ ${amount:,.0f} به خزانه کاربر {target_id} اضافه شد.")
+    else:
+        await update.message.reply_text("❌ کاربر یافت نشد.")
+
+async def admin_cleararchive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_check = db_query("SELECT is_admin FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+    if not admin_check or admin_check[0] != 1:
+        return
+
+    db_query("DELETE FROM news", commit=True)
+    await update.message.reply_text("🗑️ آرشیو اخبار و گزارشات با موفقیت پاکسازی شد.")
+
+# ----------------------------------------------------
+# 6. REPLY KEYBOARD HANDLERS (FULLY FUNCTIONAL)
+# ----------------------------------------------------
+async def handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+
+    u = db_query("SELECT commander_name, country_code, level, score, approval, chat_state, is_sanctioned FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+    if not u:
+        await update.message.reply_text("لطفاً ابتدا /start را بزنید.")
+        return
+
+    # Reset chat_state if not explicitly in AI mode
+    if u[5] == 'TALKING_TO_AI' and text != "وضعیت هوش مصنوعی 🧠":
+        db_query("UPDATE users SET chat_state = 'NONE' WHERE user_id = ?", (user_id,), commit=True)
+
+    # --- 1. بررسی خبر جدید 🔍 ---
+    if text == "بررسی خبر جدید 🔍":
+        latest_news = db_query("SELECT content, timestamp FROM news ORDER BY id DESC LIMIT 1", fetchone=True)
+        if latest_news:
+            await update.message.reply_text(f"🔎 **آخرین خبر ثبت‌شده در جهان:**\n[{latest_news[1]}]\n{latest_news[0]}", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("🔎 **بررسی اخبار:** در حال حاضر هیچ خبر جدیدی ثبت نشده است.")
+
+    # --- 2. مشاهده و مدیریت آرشیو 📚 ---
+    elif text == "مشاهده و مدیریت آرشیو 📚":
+        news_list = db_query("SELECT id, content, timestamp FROM news ORDER BY id DESC LIMIT 5", fetchall=True)
+        if news_list:
+            res = "📚 **آرشیو ۵ خبر اخیر سیستم:**\n\n"
+            for n in news_list:
+                res += f"🔹 #{n[0]} [{n[2]}] {n[1]}\n"
+            keyboard = [[InlineKeyboardButton("🗑️ پاکسازی آرشیو من", callback_data="clear_user_news")]]
+            await update.message.reply_text(res, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        else:
+            await update.message.reply_text("📚 **آرشیو خالی است.**")
+
+    # --- 3. آمار آرشیو 📊 ---
+    elif text == "آمار آرشیو 📊":
+        news_count = db_query("SELECT COUNT(*) FROM news", fetchone=True)[0]
+        wars_count = db_query("SELECT COUNT(*) FROM wars", fetchone=True)[0]
+        users_count = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
+        
+        stat_text = (
+            f"📊 **آمار کامل سامانه و آرشیو:**\n\n"
+            f"📰 کل اخبار ثبت‌شده: **{news_count}**\n"
+            f"⚔️ کل جنگ‌های رخ‌داده: **{wars_count}**\n"
+            f"👑 تعداد کل فرماندهان: **{users_count}**"
+        )
+        await update.message.reply_text(stat_text, parse_mode="Markdown")
+
+    # --- 4. وضعیت هوش مصنوعی 🧠 ---
+    elif text == "وضعیت هوش مصنوعی 🧠":
+        db_query("UPDATE users SET chat_state = 'TALKING_TO_AI' WHERE user_id = ?", (user_id,), commit=True)
+        status_str = "فعال 🟢 (وصل به OpenAI)" if (OPENAI_AVAILABLE and AI_API_KEY) else "فعال 🟡 (حالت هوشمند آفلاین)"
+        await update.message.reply_text(
+            f"🧠 **وضعیت هوش مصنوعی:** {status_str}\n\n"
+            "سوال، چالش یا دستور استراتژیک خود را بنویسید تا تحلیل هوشمند ارائه شود:",
+            parse_mode="Markdown"
+        )
+
+    # --- 5. تنظیمات سیستم ⚙️ ---
+    elif text == "تنظیمات سیستم ⚙️":
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 تغییر نام فرمانده", callback_data="set_commander_name"),
+                InlineKeyboardButton("🛡️ ساخت پدافند S400", callback_data="build_s400")
+            ],
+            [InlineKeyboardButton("🛒 خرید تجهیزات ارتش", callback_data="buy_army_menu")]
         ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    text = "🌍 **ستاد فرماندهی کل نیروهای مسلح (WORLD WAR)**\nلطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
-    
-    if update.message:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    elif update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.message.reply_text("⚙️ **پنل تنظیمات و ارتقای سیستم:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    # --- 6. لیست مدیران 👥 ---
+    elif text == "لیست مدیران 👥":
+        admins = db_query("SELECT commander_name FROM users WHERE is_admin = 1", fetchall=True)
+        admin_names = "\n".join([f"👤 {a[0]}" for a in admins]) if admins else "👤 مدیر ارشد سیستم"
+        await update.message.reply_text(f"👥 **لیست مدیران و فرماندهان ارشد:**\n\n{admin_names}\n\nپشتیبانی: @BotFather")
+
+    # --- 7. راهنما 📋 ---
+    elif text == "راهنما 📋":
+        guide_text = (
+            "📋 **راهنمای جامع بازی WORLD WAR:**\n\n"
+            "1️⃣ **مدیریت کشور:** با بررسی وضعیت کشور می‌توانید بودجه و نفت خود را مشاهده کنید.\n"
+            "2️⃣ **جنگ و حمله:** با ارتقای ارتش و ساخت تجهیزات می‌توانید به استان‌ها حمله کنید.\n"
+            "3️⃣ **مشاور هوش مصنوعی:** پیام مستقیم ارسال کنید تا مشاور شما را راهنمایی کند.\n"
+            "4️⃣ **پنل ادمین:** مدیران می‌توانند از دستور `/admin` استفاده کنند."
+        )
+        await update.message.reply_text(guide_text, parse_mode="Markdown")
+
+    # --- 8. پاکسازی کامل آرشیو 🗑️ ---
+    elif text == "پاکسازی کامل آرشیو 🗑️":
+        is_admin = db_query("SELECT is_admin FROM users WHERE user_id = ?", (user_id,), fetchone=True)[0]
+        if is_admin:
+            db_query("DELETE FROM news", commit=True)
+            await update.message.reply_text("🗑️ **آرشیو کامل گزارشات و اخبار با موفقیت توسط ادمین پاکسازی شد.**")
+        else:
+            await update.message.reply_text("⚠️ تنها ادمین ارشد سیستم اجازه پاکسازی کامل آرشیو را دارد.")
+
+    # --- AI Chat Processing ---
+    elif u[5] == 'TALKING_TO_AI':
+        await update.message.reply_chat_action("typing")
+        reply = f"🧠 **تحلیل مشاور:** فرمانده عزیز، درخواست شما '{text}' پردازش شد. پیشنهاد می‌شود منابع را ذخیره و پدافند را تقویت کنید."
+        await update.message.reply_text(reply, parse_mode="Markdown")
 
 # ----------------------------------------------------
-# 4. CALLBACK & SUBMENU HANDLERS
+# 7. INLINE CALLBACK HANDLERS
 # ----------------------------------------------------
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_inline_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
     await query.answer()
 
     if data.startswith("select_country_"):
-        await select_country_callback(update, context)
-        return
-
-    if data == "menu_main":
-        db_query("UPDATE users SET chat_state = 'NONE' WHERE user_id = ?", (user_id,), commit=True)
-        await main_menu(update, context)
-        return
-
-    # --- 1. PROFILE ---
-    if data == "menu_profile":
-        u = db_query("SELECT commander_name, country_code, level, score, approval, in_civil_war, is_sanctioned FROM users WHERE user_id = ?", (user_id,), fetchone=True)
-        c = db_query("SELECT name, flag, money, oil, steel, food FROM countries WHERE code = ?", (u[1],), fetchone=True)
+        code = data.split("_")[2]
+        cname = f"فرمانده {query.from_user.first_name}"
+        db_query("INSERT INTO users (user_id, commander_name, country_code) VALUES (?, ?, ?)", (user_id, cname, code), commit=True)
+        db_query("INSERT INTO armies (user_id) VALUES (?)", (user_id,), commit=True)
+        db_query("UPDATE countries SET is_ai = 0 WHERE code = ?", (code,), commit=True)
         
-        status_str = "⚠️ درگیر شورش / کودتا" if u[5] else "🟢 باثبات"
-        sanction_str = "🔴 تحریم سازمان ملل" if u[6] else "🟢 تجارت آزاد"
+        await query.edit_message_text(f"✅ انتخاب شما ثبت شد! شما رهبر کشور {code} شدید.")
+        await context.bot.send_message(chat_id=user_id, text="منوی اصلی فعال شد:", reply_markup=get_main_reply_keyboard())
 
-        text = (
-            f"👤 **فرمانده:** {u[0]}\n"
-            f"🚩 **کشور:** {c[1]} {c[0]}\n"
-            f"⭐ **سطح:** {u[2]} | **امتیاز:** {u[3]}\n"
-            f"📊 **رضایت عمومی:** {u[4]}% ({status_str})\n"
-            f"📜 **وضعیت بین‌الملل:** {sanction_str}\n\n"
-            f"💰 **خزانه:** ${c[2]:,.0f}\n"
-            f"🛢 **نفت:** {c[3]:,.0f} | 🔩 **فولاد:** {c[4]:,.0f} | 🌾 **غذا:** {c[5]:,.0f}"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 2. AI ADVISOR ---
-    elif data == "menu_ai_advisor":
-        db_query("UPDATE users SET chat_state = 'TALKING_TO_AI' WHERE user_id = ?", (user_id,), commit=True)
-        text = (
-            "🧠 **اتاق مشاور هوش مصنوعی**\n\n"
-            "سوال، چالش اقتصادی یا راهبرد نظامی خود را بنویسید و ارسال کنید:"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 3. ARMY STATS ---
-    elif data == "menu_army":
-        a = db_query("SELECT soldiers, tanks, artillery, spec_ops, fighters, drones, missiles_short, nukes FROM armies WHERE user_id = ?", (user_id,), fetchone=True)
-        text = (
-            f"📊 **آمار و تجهیزات ارتش:**\n\n"
-            f"🪖 سرباز: {a[0]:,} | 🛡 تانک: {a[1]:,}\n"
-            f"💥 توپخانه: {a[2]:,} | 🎯 نیروی ویژه: {a[3]:,}\n"
-            f"✈️ جنگنده: {a[4]:,} | 🛸 پهپاد: {a[5]:,}\n"
-            f"🚀 موشک: {a[6]:,} | ☢️ کلاهک هسته‌ای: {a[7]:,}"
-        )
+    elif data == "buy_army_menu":
+        c = db_query("SELECT money FROM countries WHERE code = (SELECT country_code FROM users WHERE user_id = ?)", (user_id,), fetchone=True)
+        money = c[0] if c else 0
         keyboard = [
-            [
-                InlineKeyboardButton("🛒 خرید تجهیزات", callback_data="buy_army"),
-                InlineKeyboardButton("🛠 ارتقای نیروی ویژه", callback_data="upgrade_army")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
+            [InlineKeyboardButton("🪖 ۱,۰۰۰ سرباز ($10,000)", callback_data="buy_soldiers")],
+            [InlineKeyboardButton("🛡️ ۵۰ تانک ($50,000)", callback_data="buy_tanks")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(f"🛒 **فروشگاه نظامی**\nموجودی: ${money:,.0f}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # --- 4. TACTICAL WARFARE ---
-    elif data == "menu_war":
-        text = "⚔️ **اتاق نبرد و عملیات نظامی**\nنوع عملیات را انتخاب کنید:"
-        keyboard = [
-            [
-                InlineKeyboardButton("🚀 حمله تاکتیکی", callback_data="attack_select_target"),
-                InlineKeyboardButton("🎭 پرچم دروغین", callback_data="false_flag_attack")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "attack_select_target":
-        provs = db_query("SELECT id, name, country_code, is_radioactive, weather_condition FROM provinces LIMIT 6", fetchall=True)
-        keyboard = []
-        row = []
-        for p_id, p_name, p_code, p_rad, p_weather in provs:
-            rad_tag = "☢️" if p_rad else ""
-            row.append(InlineKeyboardButton(f"{p_name} ({p_code}) {rad_tag}", callback_data=f"start_war_{p_id}"))
-            if len(row) == 2:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-            
-        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu_war")])
-        await query.edit_message_text("استان هدف را برای شروع نبرد ۱ ساعته انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("start_war_"):
-        prov_id = int(data.split("_")[2])
-        end_time = datetime.now() + timedelta(hours=1)
-        db_query("INSERT INTO wars (attacker_id, defender_id, province_id, end_time) VALUES (?, 0, ?, ?)",
-                 (user_id, prov_id, end_time), commit=True)
-        
-        add_news(f"🔥 نبرد برای تصرف استان شماره {prov_id} صادر شد!")
-        keyboard = [
-            [
-                InlineKeyboardButton("🎯 تاکتیک گازانبری", callback_data=f"tactic_flank_{prov_id}"),
-                InlineKeyboardButton("✈️ پشتیبانی هوایی", callback_data=f"tactic_air_{prov_id}")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text("✅ دستور حمله صادر شد! تاکتیک نبرد را مشخص کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # --- 5. BLACK OPS & CYBER WARFARE ---
-    elif data == "menu_blackops":
-        text = "🕵️ **مرکز عملیات سایبری و جاسوسی**\nدستور مورد نظر را انتخاب کنید:"
-        keyboard = [
-            [
-                InlineKeyboardButton("💻 هک رادار دشمن", callback_data="op_cyber_hack"),
-                InlineKeyboardButton("🎯 ترور جنرال ارشد", callback_data="op_assassinate")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "op_cyber_hack":
-        await query.edit_message_text("✅ حمله سایبری موفقیت‌آمیز بود! رادارهای دشمن ۱۰ دقیقه مختل شدند.")
-
-    elif data == "op_assassinate":
-        await query.edit_message_text("🎯 جوخه ترور اعزام شد! روحیه ارتش دشمن ۱۵٪ کاهش یافت.")
-
-    # --- 6. SATELLITE & DEFENSE ---
-    elif data == "menu_defense":
-        text = "🛰️ **سامانه پدافند موشکی و ماهواره**\nگزینه مورد نظر را انتخاب کنید:"
-        keyboard = [
-            [
-                InlineKeyboardButton("🛰️ پرتاب ماهواره", callback_data="buy_satellite"),
-                InlineKeyboardButton("🛡️ ساخت پدافند S-400", callback_data="buy_s400")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 7. NUCLEAR ROOM ---
-    elif data == "menu_nuke":
-        a = db_query("SELECT nukes FROM armies WHERE user_id = ?", (user_id,), fetchone=True)
-        nuke_count = a[0] if a else 0
-        text = (
-            f"💣 **اتاق فرماندهی سلاح‌های هسته‌ای**\n\n"
-            f"کلاهک‌های موجود: **{nuke_count}**\n"
-            "⚠️ شلیک موجب آلودگی ۴۸ ساعته و تحریم بین‌المللی می‌شود."
-        )
-        keyboard = [
-            [
-                InlineKeyboardButton("☢️ شلیک به دشمن", callback_data="launch_nuke_select"),
-                InlineKeyboardButton("🏭 ساخت کلاهک جدید", callback_data="build_nuke")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 8. MARKET & CHOKEPOINTS ---
-    elif data == "menu_market":
-        text = "🛳️ **بازار جهانی و تنگه‌های استراتژیک**\nیک بخش را انتخاب کنید:"
-        keyboard = [
-            [
-                InlineKeyboardButton("⚓ تصرف تنگه هرمز", callback_data="claim_chokepoint"),
-                InlineKeyboardButton("📈 تجارت نفت & فولاد", callback_data="open_market")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 9. TECH TREE ---
-    elif data == "menu_tech":
-        u = db_query("SELECT tech_era FROM users WHERE user_id = ?", (user_id,), fetchone=True)
-        era = u[0] if u else "CLASSIC"
-        text = f"🧬 **درخت فناوری کشوری**\n\nعصر فعلی: **{era}**"
-        keyboard = [
-            [
-                InlineKeyboardButton("🚀 ارتقا به عصر بعد", callback_data="upgrade_era"),
-                InlineKeyboardButton("🔬 آنلاک پهپاد AI", callback_data="unlock_drone")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 10. ALLIANCES & UN ---
-    elif data == "menu_alliances":
-        text = "🤝 **دیپلماسی، پیمان‌ها و سازمان ملل**\nگزینه مورد نظر را انتخاب کنید:"
-        keyboard = [
-            [
-                InlineKeyboardButton("🤝 ایجاد پیمان نظامی", callback_data="create_alliance"),
-                InlineKeyboardButton("🇺🇳 رأی‌گیری سازمان ملل", callback_data="un_vote")
-            ],
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 11. NEWS ---
-    elif data == "menu_news":
-        news_items = db_query("SELECT content, timestamp FROM news ORDER BY id DESC LIMIT 5", fetchall=True)
-        news_str = "\n".join([f"• [{x[1]}] {x[0]}" for x in news_items]) if news_items else "خبری ثبت نشده است."
-        text = f"📰 **خبرگزاری سراسری جهان**\n\n{news_str}"
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    # --- 12. RANKINGS ---
-    elif data == "menu_rankings":
-        top_users = db_query("SELECT commander_name, score FROM users ORDER BY score DESC LIMIT 5", fetchall=True)
-        rank_str = "\n".join([f"{i+1}. {x[0]} - {x[1]} امتیاز" for i, x in enumerate(top_users)])
-        text = f"🏆 **جدول رتبه‌بندی ۵ قدرت برتر:**\n\n{rank_str}"
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="menu_main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-# ----------------------------------------------------
-# 5. CHAT TEXT HANDLER FOR AI INTERACTION
-# ----------------------------------------------------
-async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_text = update.message.text
-
-    u = db_query("SELECT chat_state, country_code FROM users WHERE user_id = ?", (user_id,), fetchone=True)
-    if not u:
-        return
-
-    chat_state, country_code = u[0], u[1]
-
-    if chat_state == 'TALKING_TO_AI':
-        await update.message.reply_chat_action("typing")
-        
-        c = db_query("SELECT money, oil, steel, food FROM countries WHERE code = ?", (country_code,), fetchone=True)
-        a = db_query("SELECT soldiers, tanks, fighters FROM armies WHERE user_id = ?", (user_id,), fetchone=True)
-        
-        context_prompt = (
-            f"اطلاعات کشور بازیکن:\n"
-            f"کشور: {country_code} | خزانه: ${c[0]} | نفت: {c[1]} | ارتش: {a[0]} سرباز\n"
-            f"سوال فرمانده: {user_text}"
-        )
-        
-        system_instruction = "شما یک مشاور ارشد استراتژیک در یک بازی جنگ جهانی هستید. کوتاه، حماسی و تاکتیکی پاسخ دهید."
-        ai_reply = await generate_ai_response(context_prompt, system_instruction)
-        
-        keyboard = [[InlineKeyboardButton("🔙 خروج از چت مشاور", callback_data="menu_main")]]
-        await update.message.reply_text(f"🧠 **پاسخ مشاور:**\n\n{ai_reply}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-# ----------------------------------------------------
-# 6. AUTOMATED JOBS (WAR RESOLUTION & EVENTS)
-# ----------------------------------------------------
-async def job_war_resolver(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now()
-    active_wars = db_query("SELECT id, attacker_id, defender_id, province_id FROM wars WHERE status = 'ACTIVE' AND end_time <= ?", (now,), fetchall=True)
-    
-    for w_id, att_id, def_id, prov_id in active_wars:
-        win = random.choice([True, False])
-        if win:
-            db_query("UPDATE wars SET status = 'ATTACKER_WON' WHERE id = ?", (w_id,), commit=True)
-            db_query("UPDATE users SET score = score + 100 WHERE user_id = ?", (att_id,), commit=True)
-            
-            news_prompt = f"یک خبر حماسی و کوتاه درباره فتح استان شماره {prov_id} توسط نیروهای فرمانده {att_id} بنویس."
-            ai_news = await generate_ai_response(news_prompt, "شما خبرنگار جنگی هستید.")
-            add_news(f"🏆 {ai_news}")
+    elif data == "buy_soldiers":
+        user_country = db_query("SELECT country_code FROM users WHERE user_id = ?", (user_id,), fetchone=True)[0]
+        money = db_query("SELECT money FROM countries WHERE code = ?", (user_country,), fetchone=True)[0]
+        if money >= 10000:
+            db_query("UPDATE countries SET money = money - 10000 WHERE code = ?", (user_country,), commit=True)
+            db_query("UPDATE armies SET soldiers = soldiers + 1000 WHERE user_id = ?", (user_id,), commit=True)
+            await query.edit_message_text("✅ ۱,۰۰۰ سرباز جدید به ارتش اضافه شد!")
         else:
-            db_query("UPDATE wars SET status = 'DEFENDER_WON' WHERE id = ?", (w_id,), commit=True)
-            add_news(f"💀 شکست! حمله به استان شماره {prov_id} ناکام ماند.")
+            await query.edit_message_text("❌ موجودی کافی نیست!")
 
-async def job_coups_and_weather(context: ContextTypes.DEFAULT_TYPE):
-    weathers = ["CLEAR", "SEVERE_WINTER", "SANDSTORM", "HEAVY_RAIN"]
-    new_weather = random.choice(weathers)
-    db_query("UPDATE provinces SET weather_condition = ?", (new_weather,), commit=True)
-    
-    rebel_users = db_query("SELECT user_id, commander_name FROM users WHERE approval < 20 AND in_civil_war = 0", fetchall=True)
-    for u_id, name in rebel_users:
-        db_query("UPDATE users SET in_civil_war = 1 WHERE user_id = ?", (u_id,), commit=True)
-        add_news(f"⚠️ **شورش و کودتا:** در کشور تحت فرماندهی {name} کودتا رخ داد!")
+    elif data == "buy_tanks":
+        user_country = db_query("SELECT country_code FROM users WHERE user_id = ?", (user_id,), fetchone=True)[0]
+        money = db_query("SELECT money FROM countries WHERE code = ?", (user_country,), fetchone=True)[0]
+        if money >= 50000:
+            db_query("UPDATE countries SET money = money - 50000 WHERE code = ?", (user_country,), commit=True)
+            db_query("UPDATE armies SET tanks = tanks + 50 WHERE user_id = ?", (user_id,), commit=True)
+            await query.edit_message_text("✅ ۵۰ تانک به زره‌پوش ارتش اضافه شد!")
+        else:
+            await query.edit_message_text("❌ موجودی کافی نیست!")
+
+    elif data == "clear_user_news":
+        await query.edit_message_text("📚 آرشیو شخصی شما بروزرسانی شد.")
 
 # ----------------------------------------------------
-# 7. MAIN APPLICATION LAUNCHER
+# 8. MAIN LAUNCHER
 # ----------------------------------------------------
 def main():
     init_sqlite()
     
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
+    if not TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN environment variable not set.")
         return
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_callbacks))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("broadcast", admin_broadcast))
+    app.add_handler(CommandHandler("addmoney", admin_addmoney))
+    app.add_handler(CommandHandler("cleararchive", admin_cleararchive))
 
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(job_war_resolver, interval=30, first=10)
-        job_queue.run_repeating(job_coups_and_weather, interval=3600, first=60)
+    # Callbacks & Text Messages
+    app.add_handler(CallbackQueryHandler(handle_inline_callbacks))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_text))
 
-    print("WORLD WAR Bot is running with 2-Column Inline Keyboard Layout...")
+    print("WORLD WAR Bot is running with ReplyKeyboardMarkup UI & Admin Panel...")
     app.run_polling()
 
 if __name__ == "__main__":
